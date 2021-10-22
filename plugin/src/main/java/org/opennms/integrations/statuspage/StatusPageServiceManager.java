@@ -1,0 +1,129 @@
+/*******************************************************************************
+ * This file is part of OpenNMS(R).
+ *
+ * Copyright (C) 2020 The OpenNMS Group, Inc.
+ * OpenNMS(R) is Copyright (C) 1999-2020 The OpenNMS Group, Inc.
+ *
+ * OpenNMS(R) is a registered trademark of The OpenNMS Group, Inc.
+ *
+ * OpenNMS(R) is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License,
+ * or (at your option) any later version.
+ *
+ * OpenNMS(R) is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with OpenNMS(R).  If not, see:
+ *      http://www.gnu.org/licenses/
+ *
+ * For more information contact:
+ *     OpenNMS(R) Licensing <license@opennms.org>
+ *     http://www.opennms.org/
+ *     http://www.opennms.com/
+ *******************************************************************************/
+
+package org.opennms.integrations.statuspage;
+
+import java.time.Duration;
+import java.util.Dictionary;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+
+import org.opennms.integration.api.v1.alarms.AlarmLifecycleListener;
+import org.opennms.integration.api.v1.events.EventForwarder;
+import org.opennms.statuspage.client.api.PDClientFactory;
+import org.osgi.framework.BundleContext;
+import org.osgi.framework.ServiceRegistration;
+import org.osgi.service.cm.ManagedServiceFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Strings;
+import com.google.common.collect.Iterators;
+import com.google.common.collect.Maps;
+
+/**
+ * This class is responsible for managing the lifecycle of {@link StatusPageForwarder}s
+ * that correspond to the services configured in ${OPENNMS_HOME}/etc/org.opennms.plugins.statuspage.services-*.cfg files.
+ *
+ * Each service has its own routing key, filter and so on...
+ *
+ */
+public class StatusPageServiceManager implements ManagedServiceFactory {
+    private static final Logger LOG = LoggerFactory.getLogger(StatusPageServiceManager.class);
+    
+    public static final String ROUTING_KEY_PROP = "routingKey";
+    public static final String JEXL_FILTER_PROP = "jexlFilter";
+    public static final String HOLD_DOWN_DELAY_PROP = "holdDownDelay";
+
+    private final BundleContext bundleContext;
+    private final EventForwarder eventForwarder;
+    private final PDClientFactory pdClientFactory;
+    private final StatusPagePluginConfig pluginConfig;
+
+    private static class Entity {
+        private StatusPageForwarder plugin;
+        private ServiceRegistration<AlarmLifecycleListener> alarmLifecycleListener;
+    }
+
+    private Map<String, Entity> entities = new LinkedHashMap<>();
+
+    public StatusPageServiceManager(BundleContext bundleContext, EventForwarder eventForwarder,
+                                   PDClientFactory pdClientFactory, StatusPagePluginConfig pluginConfig) {
+        this.bundleContext = Objects.requireNonNull(bundleContext);
+        this.eventForwarder = Objects.requireNonNull(eventForwarder);
+        this.pdClientFactory = Objects.requireNonNull(pdClientFactory);
+        this.pluginConfig = Objects.requireNonNull(pluginConfig);
+    }
+
+    @Override
+    public String getName() {
+        return "StatusPage Service Manager";
+    }
+
+    @Override
+    public void updated(String pid, Dictionary<String, ?> properties) {
+        if (this.entities.containsKey(pid)) {
+            LOG.info("Updating existing plugin for pid: {}", pid);
+            deleted(pid);
+        } else {
+            LOG.info("Creating new plugin for pid: {}", pid);
+        }
+        // Convert dictionary to property map
+        Map<String,String> props = Maps.toMap(Iterators.forEnumeration(properties.keys()),
+                key -> (String) properties.get(key));
+        // Build the service config
+        final String routingKey = props.get(ROUTING_KEY_PROP);
+        final String jexlFilter = props.get(JEXL_FILTER_PROP);
+        final String holdDownDelayStr = props.get(HOLD_DOWN_DELAY_PROP);
+        Duration holdDownDelay = null;
+        if (!Strings.isNullOrEmpty(holdDownDelayStr)) {
+            holdDownDelay = Duration.parse(holdDownDelayStr);
+        }
+        StatusPageServiceConfig serviceConfig = new StatusPageServiceConfig(pid, routingKey, jexlFilter, holdDownDelay);
+
+        // Now build the entity
+        Entity entity = new Entity();
+        entity.plugin = new StatusPageForwarder(eventForwarder, pdClientFactory, pluginConfig, serviceConfig);
+        // Register the service
+        entity.alarmLifecycleListener = bundleContext.registerService(AlarmLifecycleListener.class, entity.plugin, null);
+        entities.put(pid, entity);
+        LOG.info("Successfully started plugin for pid: {}", pid);
+    }
+
+    @Override
+    public void deleted(String pid) {
+        final Entity entity = entities.remove(pid);
+        if (entity != null) {
+            LOG.info("Stopping plugin for pid: {}", pid);
+            if (entity.alarmLifecycleListener != null) {
+                entity.alarmLifecycleListener.unregister();
+            }
+        }
+    }
+}

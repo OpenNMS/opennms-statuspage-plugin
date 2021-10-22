@@ -1,0 +1,53 @@
+<blueprint xmlns="http://www.osgi.org/xmlns/blueprint/v1.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:cm="http://aries.apache.org/blueprint/xmlns/blueprint-cm/v1.1.0"
+           xsi:schemaLocation="http://www.osgi.org/xmlns/blueprint/v1.0.0
+		http://www.osgi.org/xmlns/blueprint/v1.0.0/blueprint.xsd
+		http://aries.apache.org/blueprint/xmlns/blueprint-cm/v1.1.0
+		http://aries.apache.org/schemas/blueprint-cm/blueprint-cm-1.1.0.xsd">
+
+    <!-- Global Configuration -->
+    <cm:property-placeholder id="statusPagePluginProperties" persistent-id="org.opennms.plugins.statuspage" update-strategy="reload">
+        <cm:default-properties>
+            <!-- TODO: -->
+<!--            <cm:property name="client" value="OpenNMS" />-->
+<!--            <cm:property name="alarmDetailsUrlPattern" value="http://127.0.0.1:8980/opennms/alarm/detail.htm?id=%d" />-->
+        </cm:default-properties>
+    </cm:property-placeholder>
+
+    <reference id="alarmDao" interface="org.opennms.integration.api.v1.dao.AlarmDao" availability="optional"/>
+    <reference id="eventForwarder" interface="org.opennms.integration.api.v1.events.EventForwarder" availability="optional"/>
+
+    <bean id="pluginConfig" class="org.opennms.integrations.statuspage.StatusPagePluginConfig">
+        <argument value="${client}" />
+        <argument value="${alarmDetailsUrlPattern}" />
+    </bean>
+
+    <bean id="pdClientFactory" class="org.opennms.statuspage.client.impl.DefaultPDClientFactory"/>
+
+    <bean id="serviceManager" class="org.opennms.integrations.statuspage.StatusPageServiceManager">
+        <argument ref="blueprintBundleContext"/>
+        <argument ref="eventForwarder"/>
+        <argument ref="pdClientFactory"/>
+        <argument ref="pluginConfig"/>
+    </bean>
+    <service interface="org.osgi.service.cm.ManagedServiceFactory" ref="serviceManager">
+        <service-properties>
+            <entry key="service.pid" value="org.opennms.plugins.statuspage.services"/>
+        </service-properties>
+    </service>
+
+    <bean id="statusPageWebhookHandler" class="org.opennms.integrations.statuspage.web.StatusPageWebhookHandlerImpl">
+        <argument ref="alarmDao"/>
+        <argument ref="eventForwarder"/>
+    </bean>
+    <service interface="org.opennms.integrations.statuspage.web.StatusPageWebhookHandler" ref="statusPageWebhookHandler">
+        <service-properties>
+            <entry key="application-path" value="/rest" />
+        </service-properties>
+    </service>
+
+    <service interface="org.opennms.integration.api.v1.config.events.EventConfExtension">
+        <bean class="org.opennms.integrations.statuspage.PluginEventConfExtension"/>
+    </service>
+
+</blueprint>
